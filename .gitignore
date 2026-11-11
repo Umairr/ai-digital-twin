@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.gradio/
+
+# Runtime data (visitor contacts, questions) and regenerable caches
+twin.db
+*.db
+embeddings_cache.json

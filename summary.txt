@@ -1,0 +1,11 @@
+Technical Lead with 14+ years of experience building and scaling e-commerce platforms, web applications, and backend systems.
+
+I started as a PHP developer in 2012. Since then I’ve led engineering teams at agencies and product companies, and I’m currently Technical Lead at Absolutely Digital. Most of my work is in e-commerce: multi-brand platforms, Shopify builds (themes, Admin API, GraphQL, Flow, Checkout Extensibility), and the integrations and APIs that hold them together.
+
+Core stack: PHP (Laravel, CodeIgniter), WordPress, Shopify, React, Python, REST APIs, Linux.
+
+Recently I’ve been working with AI as well. I’ve completed Google’s AI Professional Certificate and an Agentic AI Engineering course, and I build AI-powered tools on FastAPI and Next.js.
+
+What I bring: hands-on architecture, code review, and mentoring, plus a habit of shipping fast without cutting corners.
+
+Open to remote roles and collaborations. Reach me at aghaumairahmed@gmail.com.
