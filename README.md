@@ -178,6 +178,83 @@ Under the hood, `llm.py` calls Claude with the official `anthropic` SDK and ever
 
 ## Deployment
 
+The twin is a single container. It listens on `0.0.0.0:$PORT` (default `7860`) and keeps its SQLite database (FAQs, leads, unanswered questions) in `/data`. It is meant to be public, so no login is needed.
+
+### Where to host it
+
+| Platform | Best for | Notes |
+|---|---|---|
+| **Hugging Face Spaces** | Free, the most common home for Gradio AI apps | Docker Space; add persistent storage to keep the database |
+| **Render** | One-click from GitHub | `render.yaml` included; add a disk for `/data` |
+| **AWS App Runner** | Managed AWS, no servers | Short chat requests fit well; storage is ephemeral |
+| **AWS EC2 / Lightsail** | Full control, persistent data, custom domain | Docker + Caddy for HTTPS (steps below) |
+| **Google Cloud Run / Railway / Fly.io** | Pay-per-use containers | Use the same `Dockerfile`; mount a volume for `/data` where supported |
+
+### Run with Docker (any server)
+
+```bash
+docker build -t ai-digital-twin .
+docker run -d --name twin -p 7860:7860 --env-file .env -v twin-data:/data ai-digital-twin
+# open http://localhost:7860
+```
+
+### AWS option 1: App Runner (managed, simplest)
+
+1. Push the image to Amazon ECR. On Apple Silicon, build for `linux/amd64`:
+
+   ```bash
+   AWS_REGION=us-east-1
+   ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+   REPO=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/ai-digital-twin
+
+   aws ecr create-repository --repository-name ai-digital-twin --region $AWS_REGION
+   aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com
+   docker buildx build --platform linux/amd64 -t $REPO:latest --push .
+   ```
+
+2. In the AWS console, open **App Runner → Create service → Container registry → Amazon ECR** and pick the image.
+3. Set the port to **7860** and add your environment variables (`LLM_PROVIDER`, the provider key, Pushover/Telegram). Keep keys in **AWS Secrets Manager** and reference them from App Runner.
+4. Deploy. App Runner gives you an HTTPS URL, and you can attach a custom domain.
+
+App Runner's filesystem is not persistent, so the SQLite database resets on each deploy. For permanent FAQs and leads, use option 2.
+
+### AWS option 2: EC2 or Lightsail (persistent, full control)
+
+On an Ubuntu instance (2 GB RAM is enough) with ports 80 and 443 open:
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io git caddy
+git clone https://github.com/<your-username>/ai-digital-twin.git && cd ai-digital-twin
+nano .env                                   # LLM_PROVIDER, keys, notifications
+sudo docker build -t ai-digital-twin .
+sudo docker run -d --restart unless-stopped --name twin \
+  -p 127.0.0.1:7860:7860 --env-file .env -v twin-data:/data ai-digital-twin
+
+# Free HTTPS for your domain (point an A record at the instance first)
+echo 'twin.yourdomain.com {
+  reverse_proxy 127.0.0.1:7860
+}' | sudo tee /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+To update later: `git pull`, rebuild, then `docker rm -f twin` and run the same `docker run` command. The `twin-data` volume keeps your data.
+
+### Hugging Face Spaces
+
+1. Create a new Space with **SDK: Docker** (it serves port 7860 by default).
+2. Push this repository to the Space. The Space's `README.md` must start with this header:
+
+   ```yaml
+   ---
+   title: AI Digital Twin
+   sdk: docker
+   app_port: 7860
+   ---
+   ```
+
+3. Add your keys under **Settings → Variables and secrets**.
+4. To keep the database between restarts, enable persistent storage (it mounts at `/data`).
+
 ### Render
 
 The repository includes a `render.yaml` blueprint:
@@ -186,7 +263,7 @@ The repository includes a `render.yaml` blueprint:
 2. In Render, choose **New → Blueprint** and select the repository.
 3. Fill in the secret environment variables when prompted.
 
-On Render's free plan the filesystem is ephemeral, so the SQLite database resets on redeploy. Point `TWIN_DB_PATH` at a persistent disk to keep FAQs and leads.
+On Render the filesystem is ephemeral unless you attach a disk. Point `TWIN_DB_PATH` at the disk (for example `/data/twin.db`) to keep FAQs and leads.
 
 ---
 
@@ -208,6 +285,7 @@ On Render's free plan the filesystem is ephemeral, so the SQLite database resets
 ├── summary.txt       # professional summary
 ├── linkedin.pdf      # LinkedIn profile export
 ├── docs/screenshots/ # images used in this README
+├── Dockerfile        # container image for any host (AWS, Spaces, Cloud Run...)
 └── render.yaml       # Render deployment blueprint
 ```
 
