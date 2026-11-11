@@ -1,15 +1,25 @@
-"""Tiny RAG knowledge base: chunks every .md/.txt/.pdf in a folder, embeds with OpenAI,
+"""Tiny RAG knowledge base: chunks every .md/.txt/.pdf in a folder, embeds the chunks,
 caches embeddings to disk, and does cosine-similarity search with numpy.
-No vector DB needed, so it deploys anywhere (HF Spaces, Render, fly.io)."""
+No vector DB needed, so it deploys anywhere (HF Spaces, Render, fly.io).
+
+Embeddings come from any provider with an embeddings API (see llm.Embedder). When none is
+configured (e.g. Claude or Grok only), it falls back to keyword (BM25-style) search."""
 
 import hashlib
 import json
+import math
 import os
+import re
+from collections import Counter
 
 import numpy as np
 from pypdf import PdfReader
 
-EMBED_MODEL = "text-embedding-3-small"
+_WORD = re.compile(r"[a-z0-9+#.]{2,}")
+
+
+def _tokens(text: str) -> list[str]:
+    return _WORD.findall(text.lower())
 
 
 def _read_file(path: str) -> str:
@@ -45,10 +55,10 @@ def chunk_text(text: str, max_chars: int = 900, overlap: int = 150) -> list[str]
 
 
 class KnowledgeBase:
-    def __init__(self, client, sources: list[str], cache_path: str, model: str = EMBED_MODEL):
-        """sources: list of files and/or folders."""
-        self.client = client
-        self.model = model
+    def __init__(self, embedder, sources: list[str], cache_path: str):
+        """sources: list of files and/or folders. embedder: llm.Embedder."""
+        self.embedder = embedder
+        self.model = embedder.cache_key
         self.cache_path = cache_path
         self.chunks: list[dict] = []
         self.matrix: np.ndarray | None = None
@@ -66,11 +76,7 @@ class KnowledgeBase:
         return files
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        out = []
-        for i in range(0, len(texts), 100):
-            resp = self.client.embeddings.create(model=self.model, input=texts[i:i + 100])
-            out.extend(d.embedding for d in resp.data)
-        return out
+        return self.embedder.embed(texts)
 
     def _load(self, sources: list[str]) -> None:
         for path in self._files(sources):
@@ -78,6 +84,10 @@ class KnowledgeBase:
                 self.chunks.append({"source": os.path.basename(path), "index": i, "text": chunk})
         if not self.chunks:
             print("Knowledge base: no documents found")
+            return
+        if not self.embedder.available:
+            self._build_keyword_index()
+            print(f"Knowledge base: {len(self.chunks)} chunks (keyword search - no embeddings provider)")
             return
 
         cache = {}
@@ -103,7 +113,33 @@ class KnowledgeBase:
         self.matrix = m / np.linalg.norm(m, axis=1, keepdims=True)
         print(f"Knowledge base: {len(self.chunks)} chunks ({len(missing)} newly embedded)")
 
+    def _build_keyword_index(self) -> None:
+        self._doc_tokens = [Counter(_tokens(c["text"])) for c in self.chunks]
+        self._doc_len = [sum(t.values()) for t in self._doc_tokens]
+        self._avg_len = sum(self._doc_len) / max(len(self._doc_len), 1)
+        df = Counter(term for toks in self._doc_tokens for term in toks)
+        n = len(self.chunks)
+        self._idf = {t: math.log(1 + (n - f + 0.5) / (f + 0.5)) for t, f in df.items()}
+
+    def _keyword_search(self, query: str, k: int) -> list[dict]:
+        terms = _tokens(query)
+        scored = []
+        for i, toks in enumerate(self._doc_tokens):
+            score = 0.0
+            for t in terms:
+                tf = toks.get(t, 0)
+                if tf:
+                    score += self._idf.get(t, 0) * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * self._doc_len[i] / self._avg_len))
+            if score > 0:
+                scored.append((score, i))
+        scored.sort(reverse=True)
+        return [{**self.chunks[i], "score": round(s, 3)} for s, i in scored[:k]]
+
     def search(self, query: str, k: int = 4, min_score: float = 0.25) -> list[dict]:
+        if not self.chunks:
+            return []
+        if not self.embedder.available:
+            return self._keyword_search(query, k)
         if self.matrix is None:
             return []
         q = np.array(self._embed([query])[0], dtype=np.float32)

@@ -52,17 +52,15 @@ TOOL_FUNCTIONS = {
 # ---------- schemas ----------
 
 def _fn(name, description, properties, required):
+    """Provider-neutral tool schema; llm.py adapts it for OpenAI-style APIs and Claude."""
     return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": False,
-            },
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
         },
     }
 
@@ -100,16 +98,12 @@ TOOLS = [
 ]
 
 
-def handle_tool_calls(tool_calls) -> list[dict]:
-    results = []
-    for tool_call in tool_calls:
-        name = tool_call.function.name
-        try:
-            args = json.loads(tool_call.function.arguments or "{}")
-            fn = TOOL_FUNCTIONS.get(name)
-            result = fn(**args) if fn else {"error": f"Unknown tool {name}"}
-        except Exception as e:  # never crash the chat because of a tool
-            result = {"error": str(e)}
-        print(f"Tool called: {name} -> {str(result)[:200]}", flush=True)
-        results.append({"role": "tool", "content": json.dumps(result), "tool_call_id": tool_call.id})
-    return results
+def execute_tool(name: str, args: dict) -> str:
+    """Run one tool by name (explicit allow-list) and return its JSON result as a string."""
+    try:
+        fn = TOOL_FUNCTIONS.get(name)
+        result = fn(**args) if fn else {"error": f"Unknown tool {name}"}
+    except Exception as e:  # never crash the chat because of a tool
+        result = {"error": str(e)}
+    print(f"Tool called: {name} -> {str(result)[:200]}", flush=True)
+    return json.dumps(result)

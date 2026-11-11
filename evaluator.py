@@ -3,8 +3,6 @@ If the reply fails, the twin regenerates with the evaluator's feedback."""
 
 from pydantic import BaseModel
 
-EVALUATOR_MODEL = "gpt-5.4-mini"
-
 
 class Evaluation(BaseModel):
     is_acceptable: bool
@@ -27,7 +25,7 @@ Context the twin had access to:
 """
 
 
-def evaluate(client, name: str, context: str, reply: str, message: str, history: list[dict]) -> Evaluation:
+def evaluate(llm, name: str, context: str, reply: str, message: str, history: list[dict]) -> Evaluation:
     convo = "\n".join(f"{m['role']}: {m['content']}" for m in history[-8:])
     user_prompt = (
         f"Conversation so far:\n{convo}\n\n"
@@ -36,15 +34,7 @@ def evaluate(client, name: str, context: str, reply: str, message: str, history:
         "Is this reply acceptable? Give short, actionable feedback."
     )
     try:
-        resp = client.chat.completions.parse(
-            model=EVALUATOR_MODEL,
-            messages=[
-                {"role": "system", "content": _evaluator_system_prompt(name, context)},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format=Evaluation,
-        )
-        return resp.choices[0].message.parsed
+        return llm.structured(_evaluator_system_prompt(name, context), user_prompt, Evaluation)
     except Exception as e:  # if the evaluator fails, don't block the visitor
         print(f"Evaluator error: {e}")
         return Evaluation(is_acceptable=True, feedback=f"evaluator unavailable: {e}")

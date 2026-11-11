@@ -235,15 +235,43 @@ html, body, gradio-app { background: var(--tw-bg) !important; }
   .tw-main { flex-direction: column !important; }
   .tw-chat-col { order: -1; }           /* chat first on phones */
   .tw-bio, .tw-note { display: none; }  /* keep profile compact */
-  #tw-chatbot { height: 460px !important; }
+  #tw-chatbot { height: 520px !important; }
+  #tw-chatbot .placeholder { align-items: flex-start !important; justify-content: flex-start !important; overflow-y: auto !important; }
+  .tw-empty { padding: 18px 8px 6px; }
+  .tw-empty-title { font-size: 17px; }
   .tw-status { display: none; }
   .gradio-container { padding: 12px !important; }
 }
 """
 
+# Runs in <head> before Gradio mounts: the design is light-only, so pin Gradio's light
+# theme even for visitors whose OS is in dark mode (otherwise replies become unreadable).
+HEAD = """
+<script>
+(function () {
+  var url = new URL(window.location.href);
+  if (url.searchParams.get('__theme') !== 'light') {
+    url.searchParams.set('__theme', 'light');
+    window.location.replace(url.href);
+  }
+})();
+</script>
+"""
+
 JS = """
 () => {
-  document.body.classList.remove('dark');  // always light - looks consistent for recruiters
+  // The design is light-only (consistent for recruiters). Gradio follows the visitor's OS
+  // dark mode and marks several elements with `.dark`, which made replies unreadable, so
+  // pin the official light theme via the URL and strip any `.dark` class that appears.
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('__theme') !== 'light') {
+    url.searchParams.set('__theme', 'light');
+    window.location.replace(url.href);
+    return;
+  }
+  const undark = () => document.querySelectorAll('.dark').forEach(el => el.classList.remove('dark'));
+  undark();
+  new MutationObserver(undark).observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ['class'] });
   document.title = 'Agha Umair Ahmed · AI Twin';
   setTimeout(() => { const t = document.querySelector('#tw-input textarea'); if (t) t.focus(); }, 400);
 }

@@ -9,26 +9,31 @@ Agentic patterns used:
 
 import os
 
-import gradio as gr
 from dotenv import load_dotenv
-from openai import OpenAI
 
 load_dotenv(override=True)
 
 import context  # noqa: E402
 from evaluator import evaluate  # noqa: E402
 from knowledge import KnowledgeBase  # noqa: E402
+from llm import LLM, Embedder  # noqa: E402
 from telegram_bot import start_telegram_bot  # noqa: E402
-from tools import TOOLS, handle_tool_calls, init_tools  # noqa: E402
+from tools import TOOLS, execute_tool, init_tools  # noqa: E402
 
-MODEL = os.getenv("TWIN_MODEL", "gpt-5.4-mini")
 MAX_TOOL_ROUNDS = 6
 MAX_RETRIES = 2
 
-openai = OpenAI()
+# LLM_PROVIDER / LLM_MODEL pick the chat model (OpenAI, Claude, OpenRouter, Grok, Gemini, Ollama).
+# TWIN_MODEL is still honoured for backwards compatibility.
+llm = LLM(model=os.getenv("LLM_MODEL") or os.getenv("TWIN_MODEL"))
+evaluator_llm = LLM(
+    provider=os.getenv("EVALUATOR_PROVIDER") or llm.provider.name,
+    model=os.getenv("EVALUATOR_MODEL") or (llm.model if not os.getenv("EVALUATOR_PROVIDER") else None),
+)
+print(f"Chat model: {llm}  |  Evaluator: {evaluator_llm}")
 
 kb = KnowledgeBase(
-    openai,
+    Embedder(llm.provider.name),
     sources=[context.KNOWLEDGE_DIR, context.SUMMARY_PATH, context.LINKEDIN_PATH],
     cache_path=os.path.join(context.BASE, "embeddings_cache.json"),
 )
@@ -48,37 +53,28 @@ def _clean_history(history: list) -> list[dict]:
     return cleaned
 
 
-def _run_agent(messages: list) -> tuple[str, str]:
+def _run_agent(history: list[dict], message: str, extra: list[dict] | None = None) -> tuple[str, str]:
     """Run the tool loop. Returns (reply, retrieved_context) so the evaluator sees what the twin saw."""
-    retrieved = []
-    for _ in range(MAX_TOOL_ROUNDS):
-        response = openai.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS)
-        choice = response.choices[0]
-        if choice.finish_reason != "tool_calls":
-            return choice.message.content or "", "\n\n".join(retrieved)
-        results = handle_tool_calls(choice.message.tool_calls)
-        messages.append(choice.message)
-        messages.extend(results)
-        retrieved.extend(r["content"] for r in results)
-    return "Sorry, I got a bit tangled up there - could you rephrase that?", "\n\n".join(retrieved)
+    reply, outputs = llm.run_tools(
+        context.system_prompt, history, message, TOOLS, execute_tool,
+        max_rounds=MAX_TOOL_ROUNDS, extra_messages=extra,
+    )
+    return reply, "\n\n".join(outputs)
 
 
 def chat(message: str, history: list) -> str:
     history = _clean_history(history)
-    messages = [{"role": "system", "content": context.system_prompt}] + history + [
-        {"role": "user", "content": message}
-    ]
-    reply, retrieved = _run_agent(list(messages))
+    reply, retrieved = _run_agent(history, message)
 
     for attempt in range(MAX_RETRIES):
         evaluation = evaluate(
-            openai, context.NAME, context.base_context + "\n\n## Retrieved this turn\n" + retrieved,
+            evaluator_llm, context.NAME, context.base_context + "\n\n## Retrieved this turn\n" + retrieved,
             reply, message, history,
         )
         if evaluation.is_acceptable:
             break
         print(f"Evaluator rejected (attempt {attempt + 1}): {evaluation.feedback}", flush=True)
-        retry_messages = messages + [
+        retry = [
             {"role": "assistant", "content": reply},
             {
                 "role": "system",
@@ -86,12 +82,12 @@ def chat(message: str, history: list) -> str:
                 f"Feedback: {evaluation.feedback}\nWrite an improved reply to the visitor's last message.",
             },
         ]
-        reply, more = _run_agent(retry_messages)
+        reply, more = _run_agent(history, message, retry)
         retrieved += "\n\n" + more
     return reply
 
 
-from ui import CSS, JS, THEME, build_ui  # noqa: E402
+from ui import CSS, HEAD, JS, THEME, build_ui  # noqa: E402
 
 demo = build_ui(chat)
 
@@ -99,6 +95,7 @@ if __name__ == "__main__":
     demo.launch(
         css=CSS,
         js=JS,
+        head=HEAD,
         theme=THEME,
         server_name="0.0.0.0",
         server_port=int(os.environ["PORT"]) if os.environ.get("PORT") else None,  # None = Gradio picks a free port
